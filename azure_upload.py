@@ -3,6 +3,7 @@ import concurrent.futures
 import hashlib
 import re
 import sys
+import time
 import pathlib
 import pandas as pd
 from Bio.Seq import Seq
@@ -101,7 +102,9 @@ def get_indices(file_paths):
     
     
 # rname fastq files according to corresponding sample_id determined from i7/i5
-def rename_fastq_files(file_paths, sample_ids_file):
+def rename_fastq_files(file_paths, samples_df):
+    
+    # global samples_df
     
     # entries will be a tuple -> (file path, file name)
     rename_files = []
@@ -130,10 +133,6 @@ def rename_fastq_files(file_paths, sample_ids_file):
     i5 = "-" + i5
     i5_rc = "-" + i5_rc
     
-    # read in excel file with sample info as df
-    samples_df = pd.read_excel(sample_ids_file)
-    samples_df = samples_df[['sample', 'i7', 'i5']]
-
     # find corresponding sample id given i5/i7
     result_df = samples_df.loc[((samples_df['i7'] == i7) | (samples_df['i7'] == i7_rc)) & ((samples_df['i5'] == i5) | (samples_df['i5'] == i5_rc))]
     
@@ -194,6 +193,11 @@ def md5_checksum(files):
     
 def main():
     
+    # read in excel file with sample id and indices info as df
+    # global samples_df
+    samples_df = pd.read_excel(sys.argv[1])
+    samples_df = samples_df[['sample', 'i7', 'i5']]
+    
     # recursively find all files from current directory using a generator function
     # must use relative path until after "group_smp_files" fn call
     file_ls = scan_files("./")
@@ -209,12 +213,25 @@ def main():
 
     # generate check sum text file, rename fastq files and create a list of seperate deques for each sample
     # first entry of deque contains sample id, other entries are the relative file paths 
-    for index, entry in enumerate(file_ls_grouped):
-        file_ls_grouped[index] = rename_fastq_files(entry, sys.argv[1])
-        checksum_file_path = md5_checksum(file_ls_grouped[index][1:])
-        file_ls_grouped[index].append(os.path.abspath(checksum_file_path))
-        
+    # for index, entry in enumerate(file_ls_grouped):
+    #     file_ls_grouped[index] = rename_fastq_files(entry, samples_df)
+    #     checksum_file_path = md5_checksum(file_ls_grouped[index][1:])
+    #     file_ls_grouped[index].append(os.path.abspath(checksum_file_path))
+    
+    with concurrent.futures.ProcessPoolExecutor() as exe:
+        for index, entry in enumerate(file_ls_grouped):
+            future = exe.submit(rename_fastq_files, entry, samples_df)
+            file_ls_grouped[index] = future.result()
+            future2 = exe.submit(md5_checksum, file_ls_grouped[index][1:])
+            checksum_file_path = future2.result()
+            file_ls_grouped[index].append(os.path.abspath(checksum_file_path))
+    
+     
     print("\n\n\nfile_ls_grouped after checksum and renaming: \n", file_ls_grouped)
+    print("\n\n& --- %s seconds ---" % (time.time() - start_time))
+    
+ 
+start_time = time.time()
     
 if __name__ == "__main__":
     main()
