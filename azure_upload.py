@@ -196,7 +196,7 @@ def main():
     
     # recursively find all files from current directory using a generator function
     # must use relative path until after "group_smp_files" fn call
-    file_ls = scan_files("./test")
+    file_ls = scan_files("./")
     
     # create a list of all files
     path_ls = []
