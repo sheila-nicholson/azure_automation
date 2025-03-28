@@ -4,8 +4,8 @@ import hashlib
 import re
 import sys
 import time
-import pathlib
 import pandas as pd
+import requests
 from Bio.Seq import Seq
 from collections import deque
 
@@ -13,6 +13,7 @@ from collections import deque
 # pip install Biopython
 # pip install pandas
 # pip intall openpyxl
+# NEW: pip install requests
 
 
 # command line arguments:
@@ -102,9 +103,14 @@ def get_indices(file_paths):
     
     
 # rname fastq files according to corresponding sample_id determined from i7/i5
-def rename_fastq_files(file_paths, samples_df):
+def rename_fastq_files(file_paths):
     
-    # global samples_df
+    print("Task rename_fastq_files running in process ID: ", os.getpid())
+    
+    # global sample_ids_df
+    
+    sample_ids_df = pd.read_excel(sys.argv[1])
+    # sample_ids_df = sample_ids_df[['sample', 'i7', 'i5']]
     
     # entries will be a tuple -> (file path, file name)
     rename_files = []
@@ -134,7 +140,8 @@ def rename_fastq_files(file_paths, samples_df):
     i5_rc = "-" + i5_rc
     
     # find corresponding sample id given i5/i7
-    result_df = samples_df.loc[((samples_df['i7'] == i7) | (samples_df['i7'] == i7_rc)) & ((samples_df['i5'] == i5) | (samples_df['i5'] == i5_rc))]
+    # global sample_ids_df
+    result_df = sample_ids_df.loc[((sample_ids_df['i7'] == i7) | (sample_ids_df['i7'] == i7_rc)) & ((sample_ids_df['i5'] == i5) | (sample_ids_df['i5'] == i5_rc))]
     
     # check that a single corresponding sample id was found
     if result_df.empty or result_df.shape[0] > 1:
@@ -147,7 +154,7 @@ def rename_fastq_files(file_paths, samples_df):
         # determine new file name and path
         a = re.sub(r'\w*[ATCGU]{8}.[ATCGU]{8}', result_df.iloc[0]['sample'], file[1])
         start = re.search(result_df.iloc[0]['sample'] + r'_\d', a).group(0)
-        end = re.search(r'.fastq\w*', file[1]).group(0)
+        end = re.search(r'.fastq(.*)', file[1]).group(0)
         new_name = start + end
         new_path = re.sub(file[1], new_name, file[0])
 
@@ -156,15 +163,17 @@ def rename_fastq_files(file_paths, samples_df):
         # update list 
         rename_files[i] = (new_path, new_name)
     
-    updated_file_paths.extendleft((os.path.abspath(rename_files[0][0]), os.path.abspath(rename_files[1][0]), result_df.iloc[0]['sample']))
+    updated_file_paths.extendleft((os.path.abspath(rename_files[1][0]), os.path.abspath(rename_files[0][0]), result_df.iloc[0]['sample']))
     return list(updated_file_paths)
 
 # create text file containing a checksum for each file present        
 def md5_checksum(files):
-
+    
+    print("Task md5chec_sum running in process ID: ", os.getpid())
     # read file in 64kb chunks  
     BUF_SIZE = 64 * 2^10
-    dir = os.path.commonpath(files)
+    #print(files)
+    dir = os.path.commonpath(files[1:])
     name = dir + "/md5_checksum.txt"
     hashes = []
     
@@ -189,17 +198,15 @@ def md5_checksum(files):
         for index, file in enumerate(files):
             checksum_file.write(hashes[index] + "\t" + os.path.basename(file) + "\n")
     
-    return name
+    return os.path.abspath(name)
     
 def main():
     
     # read in excel file with sample id and indices info as df
-    # global samples_df
-    samples_df = pd.read_excel(sys.argv[1])
-    samples_df = samples_df[['sample', 'i7', 'i5']]
+    # sample_ids_df = pd.read_excel(sys.argv[1])
+    # sample_ids_df = sample_ids_df[['sample', 'i7', 'i5']]
     
     # recursively find all files from current directory using a generator function
-    # must use relative path until after "group_smp_files" fn call
     file_ls = scan_files("./")
     
     # create a list of all files
@@ -210,25 +217,26 @@ def main():
     # group files together into seperate lists for each sample
     file_ls_grouped = group_smp_files(path_ls)
     print("\n\n\nfile_ls_grouped before checksum and renaming: \n", file_ls_grouped)
+    
+    
+    print("os.process_cpu_count(): ", os.process_cpu_count())
 
-    # generate check sum text file, rename fastq files and create a list of seperate deques for each sample
-    # first entry of deque contains sample id, other entries are the relative file paths 
-    # for index, entry in enumerate(file_ls_grouped):
-    #     file_ls_grouped[index] = rename_fastq_files(entry, samples_df)
-    #     checksum_file_path = md5_checksum(file_ls_grouped[index][1:])
-    #     file_ls_grouped[index].append(os.path.abspath(checksum_file_path))
     
     with concurrent.futures.ProcessPoolExecutor() as exe:
-        for index, entry in enumerate(file_ls_grouped):
-            future = exe.submit(rename_fastq_files, entry, samples_df)
-            file_ls_grouped[index] = future.result()
-            future2 = exe.submit(md5_checksum, file_ls_grouped[index][1:])
-            checksum_file_path = future2.result()
-            file_ls_grouped[index].append(os.path.abspath(checksum_file_path))
-    
+        
+        # run processes in parallel to create checksum for files
+        checksum_files = list(exe.map(md5_checksum, file_ls_grouped))
+        # run processes in parallel to rename fastq files
+        renamed_files = list(exe.map(rename_fastq_files, file_ls_grouped))
+        
+        # update list of files
+        for index, entry in enumerate(checksum_files):
+            renamed_files[index].append(entry)
+            
+               
      
-    print("\n\n\nfile_ls_grouped after checksum and renaming: \n", file_ls_grouped)
-    print("\n\n& --- %s seconds ---" % (time.time() - start_time))
+    print("\n\n\nfile_ls_grouped after checksum and renaming: \n", renamed_files)
+    print("\n\n--- %s seconds ---" % (time.time() - start_time))
     
  
 start_time = time.time()
